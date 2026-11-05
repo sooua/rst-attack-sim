@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import itertools
 import random
 import socket
 import sys
@@ -52,7 +53,7 @@ FW_PUBLIC = "203.0.113.5"
 
 ARGS: argparse.Namespace
 _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-_counter = [10000]
+_counter = itertools.count(10001)  # next() is atomic under the GIL; shared by beacon + main thread
 
 
 def _ts() -> str:
@@ -65,7 +66,7 @@ def _snare_ts() -> str:
 
 def send(line: str) -> None:
     if ARGS.dry_run:
-        print(line[:160])
+        print(line)
         return
     _sock.sendto(line.encode(), (ARGS.host, ARGS.port))
 
@@ -98,18 +99,17 @@ def asa_teardown(inside_ip: str, inside_port: int, outside_ip: str, outside_port
 
 def pan_traffic(src: str, dst: str, dport: int, user: str, app: str, sent: int, recv: int) -> str:
     now = dt.datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-    _counter[0] += 1
+    n = next(_counter)
     return (f"<14>{_ts()} fw-pan 1,{now},001901000123,TRAFFIC,end,2049,{now},{src},{dst},{FW_PUBLIC},{dst},"
             f"allow-out,corp\\{user},,{app},vsys1,trust,untrust,ethernet1/2,ethernet1/1,default,{now},"
-            f"{_counter[0]},1,{random.randint(49152, 65535)},{dport},{random.randint(1024, 65535)},{dport},0x400053,tcp,allow,"
-            f"{sent + recv},{sent},{recv},{max(3, (sent + recv) // 1400)},{now},{random.randint(1, 120)},any,0,{_counter[0]},"
+            f"{n},1,{random.randint(49152, 65535)},{dport},{random.randint(1024, 65535)},{dport},0x400053,tcp,allow,"
+            f"{sent + recv},{sent},{recv},{max(3, (sent + recv) // 1400)},{now},{random.randint(1, 120)},any,0,{n},"
             f"0x0,10.0.0.0-10.255.255.255,Netherlands,0,{max(2, sent // 1400)},{max(1, recv // 1400)},tcp-fin,0,0,0,0,,fw-pan,"
             f"from-policy,,,0,,0,,N/A,0,0,0,0")
 
 
 def win(host: str, eid: int, audit: str, category: str, desc: str) -> str:
-    _counter[0] += 1
-    n = _counter[0]
+    n = next(_counter)
     return (f"<13>{_ts()} {host} MSWinEventLog\t1\tSecurity\t{n}\t{_snare_ts()}\t{eid}\t"
             f"Microsoft-Windows-Security-Auditing\tN/A\tN/A\t{audit}\t{host}\t{category}\t\t{desc}\t{n}")
 
@@ -361,17 +361,32 @@ STAGES = {
 GAPS = {1: 90, 2: 60, 4: 60, 5: 60, 6: 90, 7: 30}  # seconds between stages (real, before --speed)
 
 
+def _positive_float(value: str) -> float:
+    try:
+        x = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a number > 0, got {value!r}") from None
+    if not x > 0:  # also rejects nan
+        raise argparse.ArgumentTypeError(f"must be > 0, got {value}")
+    return x
+
+
 def main() -> int:
     global ARGS
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--host", default="127.0.0.1", help="syslog collector IP")
     ap.add_argument("--port", type=int, default=514)
-    ap.add_argument("--stage", type=int, choices=sorted(STAGES), help="run one stage only (3 = C2 beacon runs alongside the chain)")
-    ap.add_argument("--speed", type=float, default=1.0, help="divide every pause by this")
+    ap.add_argument("--stage", type=int, choices=sorted({*STAGES, 3}),
+                    help="run one stage only (3 = the C2 beacon on its own); omit for the full chain")
+    ap.add_argument("--speed", type=_positive_float, default=1.0, help="divide every pause by this (> 0)")
     ap.add_argument("--dry-run", action="store_true")
     ARGS = ap.parse_args()
     random.seed(7)
 
+    if ARGS.stage == 3:
+        print(f"stage 3: {beacon_loop.__doc__}")
+        beacon_loop(threading.Event())
+        return 0
     if ARGS.stage:
         print(f"stage {ARGS.stage}: {STAGES[ARGS.stage].__doc__}")
         STAGES[ARGS.stage]()

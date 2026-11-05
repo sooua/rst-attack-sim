@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   dry-run:
     runs-on: ubuntu-latest
@@ -22,4 +25,4 @@ jobs:
           echo "emitted $lines lines"
           test "$lines" -gt 1000
       - name: Each stage (dry run)
-        run: for s in 1 2 4 5 6 7 8 9; do python attack_sim.py --dry-run --stage "$s" > /dev/null; done
+        run: for s in 1 2 3 4 5 6 7 8 9; do python attack_sim.py --dry-run --stage "$s" > /dev/null; done
