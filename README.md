@@ -38,7 +38,7 @@ python attack_sim.py --dry-run                    # print every line, send nothi
 
 | flag | meaning |
 |---|---|
-| `--host` | syslog collector IP (default `172.19.170.10`) |
+| `--host` | syslog collector IP (default `127.0.0.1`) |
 | `--port` | UDP port (default `514`) |
 | `--stage N` | run one stage only (see table); omit for the full chain |
 | `--speed X` | divide every inter-event pause by X |

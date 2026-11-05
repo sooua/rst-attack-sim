@@ -1,6 +1,6 @@
-"""Multi-stage intrusion simulator for a lab QRadar (syslog 514/udp). Dev only.
+"""Multi-stage intrusion simulator for a lab QRadar (syslog 514/udp). Authorized lab use only.
 
-    python attack_sim.py --host 172.19.170.10            # whole chain, ~15 min
+    python attack_sim.py --host 10.0.0.5                 # whole chain, ~15 min
     python attack_sim.py --stage 4 --speed 4             # one stage, 4x faster
     python attack_sim.py --dry-run                        # print, send nothing
 
@@ -26,7 +26,7 @@ Rules that fire on CE defaults (enabled out of the box):
   100061/100064/100066 Login Failures Followed By Success   stage 5
   100111 Remote Scanner Detected / 100109 Host Port Scan    stage 1
 Stages 2/3/6/7/8 produce no offense by themselves on CE — they are the context an analyst
-(or the copilot) has to pull from Ariel to see the whole chain.
+has to pull from Ariel to see the whole chain.
 
 Scenario: 45.142.212.100 scans fw-edge, phishes j.chen on WS-FIN-07 (winword -> powershell -enc),
 beacons to C2 185.220.101.4:443, dumps lsass, sprays DC01, moves to FILE01/DC01 as svc_backup
@@ -364,7 +364,7 @@ GAPS = {1: 90, 2: 60, 4: 60, 5: 60, 6: 90, 7: 30}  # seconds between stages (rea
 def main() -> int:
     global ARGS
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--host", default="172.19.170.10")
+    ap.add_argument("--host", default="127.0.0.1", help="syslog collector IP")
     ap.add_argument("--port", type=int, default=514)
     ap.add_argument("--stage", type=int, choices=sorted(STAGES), help="run one stage only (3 = C2 beacon runs alongside the chain)")
     ap.add_argument("--speed", type=float, default=1.0, help="divide every pause by this")
