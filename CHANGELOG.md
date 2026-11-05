@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-06
+
 ### Added
 
 - `--port` validation.
@@ -35,5 +37,6 @@ All notable changes to this project are documented here. The format follows
   to `127.0.0.1`.
 - CI that dry-runs the full chain and each stage on Python 3.10 and 3.13.
 
-[Unreleased]: https://github.com/sooua/rst-attack-sim/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sooua/rst-attack-sim/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/sooua/rst-attack-sim/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sooua/rst-attack-sim/releases/tag/v0.1.0
