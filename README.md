@@ -29,7 +29,7 @@ see [Roadmap](#roadmap).
 ## Quick start
 
 ```bash
-python attack_sim.py --host 10.0.0.5              # whole chain into 10.0.0.5:514, ~15 min real time
+python attack_sim.py --host 10.0.0.5              # whole chain into 10.0.0.5:514, ~22 min real time
 python attack_sim.py --host 10.0.0.5 --speed 8    # same chain, 8x faster
 python attack_sim.py --stage 1                    # just the perimeter scan
 python attack_sim.py --stage 9 --speed 5          # the second, independent incident
@@ -43,6 +43,9 @@ python attack_sim.py --dry-run                    # print every line, send nothi
 | `--stage N` | run one stage only (see table); omit for the full chain |
 | `--speed X` | divide every inter-event pause by X |
 | `--dry-run` | print lines to stdout, send nothing |
+
+Every run ends with a per-log-source line count on stderr; compare it against
+QRadar's `eventcount` for each source.
 
 ## The scenario
 
@@ -75,6 +78,11 @@ real test rather than a rule-lit checkbox.
 WS-FIN-07 10.10.20.57   patient zero (j.chen)        DC01 10.10.1.10   domain controller
 FILE01 10.10.1.20   file server                      srv-app01 10.10.2.15   Linux app server
 ```
+
+The external IPs (`45.142.212.100`, `185.220.101.4`, `91.240.118.66`) and the
+domain `cdn-static-update.com` are real-world addresses, chosen so geo and
+threat-intel enrichment fires. Feeding the output into an environment with live
+threat-intel feeds may raise matches — use the lab only.
 
 ## DSM / log-source mapping (QRadar)
 
