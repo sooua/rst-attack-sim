@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Full chain (dry run)
+        run: |
+          lines=$(python attack_sim.py --dry-run | wc -l)
+          echo "emitted $lines lines"
+          test "$lines" -gt 1000
+      - name: Each stage (dry run)
+        run: for s in 1 2 4 5 6 7 8 9; do python attack_sim.py --dry-run --stage "$s" > /dev/null; done
